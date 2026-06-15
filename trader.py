@@ -79,6 +79,67 @@ def cancel_order(order_id: str, stock_code: str) -> dict:
     return _post('/api/claw/mockTrading/cancel',
         {'type': 'order', 'orderId': order_id, 'stockCode': stock_code})
 
+def verify_filled(stock_code: str, quantity: int, drt: int = 1, max_wait: int = 20) -> dict:
+    """轮询确认成交。drt=1买/2卖。返回 {filled:bool, status, tradeCount, avgPrice}"""
+    import time
+    target_drt = drt
+    end = time.time() + max_wait
+    last = {}
+    while time.time() < end:
+        try:
+            orders = get_orders(0)  # 全部委托
+            # 找最近一笔匹配股票+方向的订单
+            cands = [o for o in orders
+                     if o.get('secCode') == stock_code
+                     and o.get('drt') == target_drt]
+            if cands:
+                # 按时间倒序
+                cands.sort(key=lambda x: x.get('time', 0), reverse=True)
+                o = cands[0]
+                status = o.get('status')
+                trade_cnt = o.get('tradeCount', 0)
+                price_dec = o.get('priceDec', 2)
+                avg_price = (o.get('tradePrice', 0) / (10 ** price_dec)) if trade_cnt else 0
+                last = {'status': status, 'tradeCount': trade_cnt,
+                        'avgPrice': avg_price, 'orderId': o.get('orderId')}
+                if status == 4 and trade_cnt >= quantity:  # 全部成交
+                    last['filled'] = True
+                    return last
+                if status == 8:  # 已撤
+                    last['filled'] = False
+                    last['reason'] = 'cancelled'
+                    return last
+        except Exception as e:
+            last = {'error': str(e)}
+        time.sleep(2)
+    last['filled'] = False
+    last['reason'] = 'timeout'
+    return last
+
+def buy_safe(stock_code: str, quantity: int, price: Optional[float] = None,
+             verify: bool = True) -> dict:
+    """安全买入：rc=0 + status=4 双校验。返回 {ok, order_resp, fill_info}"""
+    order_resp = buy(stock_code, quantity, price)
+    out = {'ok': True, 'order_resp': order_resp, 'stage': 'submitted'}
+    if verify:
+        fill = verify_filled(stock_code, quantity, drt=1)
+        out['fill_info'] = fill
+        out['ok'] = bool(fill.get('filled'))
+        out['stage'] = 'filled' if out['ok'] else 'submit_only'
+    return out
+
+def sell_safe(stock_code: str, quantity: int, price: Optional[float] = None,
+              verify: bool = True) -> dict:
+    """安全卖出：rc=0 + status=4 双校验"""
+    order_resp = sell(stock_code, quantity, price)
+    out = {'ok': True, 'order_resp': order_resp, 'stage': 'submitted'}
+    if verify:
+        fill = verify_filled(stock_code, quantity, drt=2)
+        out['fill_info'] = fill
+        out['ok'] = bool(fill.get('filled'))
+        out['stage'] = 'filled' if out['ok'] else 'submit_only'
+    return out
+
 def post_diary(html: str) -> dict:
     """发经验交流帖"""
     return _post('/api/claw/mockTrading/newPost', {'text': html})

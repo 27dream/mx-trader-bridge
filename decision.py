@@ -177,6 +177,22 @@ def generate_decision():
             resp_clean = '\n'.join(resp_clean.split('\n')[1:-1])
         decision = json.loads(resp_clean)
         decision['ai_reasoning'] = resp[:500]
+        # ✅ 白名单校验：picks 必须来自候选池（zt + hot），防止 LLM 编造代码
+        whitelist = {s['code'] for s in (zt + hot) if s.get('code')}
+        valid_picks = []
+        rejected = []
+        for p in decision.get('picks', []):
+            code = (p.get('code') or '').strip()
+            if not code:
+                continue
+            if code in whitelist:
+                valid_picks.append(p)
+            else:
+                rejected.append(code)
+        if rejected:
+            print(f"⚠️ 白名单拦截 LLM 幻觉股票: {rejected}")
+        decision['picks'] = valid_picks[:2]
+        decision['_rejected_codes'] = rejected
         return decision
     except Exception as e:
         print(f"❌ AI 解析失败: {e}, 返回原文：{resp[:300] if 'resp' in dir() else ''}")

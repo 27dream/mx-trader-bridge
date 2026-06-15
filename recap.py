@@ -14,35 +14,54 @@ def run_recap():
     bd = bal.get('data', {})
     total = bd.get('totalAssets', 0)
     pos_value = bd.get('totalPosValue', 0)
+    avail = bd.get('availBalance', 0)
 
-    pos = trader.get_positions()
-    today_orders = [o for o in trader.get_orders(0) if o.get('status') == 4]  # 已成
+    pos = [p for p in trader.get_positions() if p.get('count',0) > 0]
+    # 真相源：今日已成交订单（status=4 + 时间戳=今日）
+    from datetime import time as dtime
+    today_start = int(datetime.combine(datetime.now().date(), dtime(0,0)).timestamp())
+    today_end = today_start + 86400
+    real_orders = [o for o in trader.get_orders(0)
+                   if o.get('status') == 4
+                   and today_start <= (o.get('time') or 0) < today_end
+                   and (o.get('tradeCount') or 0) > 0]
 
-    # 今日交易记录
+    # 今日交易记录（仅作对账参考）
     conn = db.get_conn()
-    today_trades = conn.execute(
-        "SELECT * FROM trades WHERE date=? ORDER BY id", (today,)).fetchall()
-    today_trades = [dict(r) for r in today_trades]
+    db_trades = [dict(r) for r in conn.execute(
+        "SELECT * FROM trades WHERE date=? ORDER BY id", (today,)).fetchall()]
     conn.close()
 
-    win = sum(1 for t in today_trades if t['action']=='SELL' and (t.get('reason','').startswith('take_profit')))
-    loss = sum(1 for t in today_trades if t['action']=='SELL' and (t.get('reason','').startswith('stop_loss')))
-    
-    # 今日盈亏（粗算：日间持仓盈亏总和）
-    day_profit = sum(p.get('dayProfit', 0) for p in pos)
+    # ⚠️ 字段：drt=1买/2卖，tradePrice 需 ÷ 10**priceDec
+    def avg_price(o):
+        return (o.get('tradePrice',0) or 0) / (10 ** (o.get('priceDec',2) or 2))
+    real_buys = [o for o in real_orders if o.get('drt') == 1]
+    real_sells = [o for o in real_orders if o.get('drt') == 2]
+    win = sum(1 for o in real_sells if (o.get('profit',0) or 0) > 0)
+    loss = sum(1 for o in real_sells if (o.get('profit',0) or 0) < 0)
+
+    # 当日盈亏 = 持仓 dayProfit 累加 + 已平仓 profit 累加
+    day_profit = sum(p.get('dayProfit', 0) or 0 for p in pos) + sum(o.get('profit',0) or 0 for o in real_sells)
     day_pct = (day_profit / total * 100) if total else 0
+    # 对账警告
+    db_codes = {t['sec_code'] for t in db_trades if t['action']=='BUY'}
+    real_codes = {p['secCode'] for p in pos} | {o['secCode'] for o in real_buys}
+    ghost = db_codes - real_codes
+    ghost_warn = f"\n⚠️ DB 有但实际未持仓（疑似下单被拒）: {','.join(ghost)}" if ghost else ""
 
-    notes = f"建仓:{sum(1 for t in today_trades if t['action']=='BUY')} | 止盈:{win} | 止损:{loss} | 持仓数:{len([p for p in pos if p.get('count',0)>0])}"
-    db.save_recap(today, total, day_profit, day_pct, win, loss, notes)
+    notes = f"实际建仓:{len(real_buys)} | 平仓:{len(real_sells)}（盈{win}/亏{loss}）| 持仓数:{len(pos)}"
+    db.save_recap(today, total, day_profit, day_pct, win, loss, notes + ghost_warn)
 
-    # 生成日报
+    # 生成日报（用真实订单价/量）
     report = f"""<h3>📊 {today} 复盘</h3>
-<p>💰 总资产 {total:,.0f}｜持仓 {pos_value:,.0f}｜当日盈亏 <strong>{day_profit:+,.0f}（{day_pct:+.2f}%）</strong></p>
-<p>📦 {notes}</p>
-<ul>"""
-    for t in today_trades:
-        emoji = '🟢' if t['action']=='BUY' else '🔴'
-        report += f"<li>{emoji} {t['action']} {t['sec_code']} {t.get('sec_name','')} 价{t.get('price',0):.2f}×{t['quantity']} | {t.get('reason','')}</li>"
+<p>💰 总资产 {total:,.0f}｜持仓 {pos_value:,.0f}｜可用 {avail:,.0f}｜当日盈亏 <strong>{day_profit:+,.0f}（{day_pct:+.2f}%）</strong></p>
+<p>📦 {notes}</p>"""
+    if ghost: report += f"<p>⚠️ <strong>下单被拒</strong>: {','.join(ghost)}（DB 有记录但实际无持仓）</p>"
+    report += "<ul>"
+    for o in real_orders:
+        emoji = '🟢' if o.get('drt')==1 else '🔴'
+        ap = avg_price(o)
+        report += f"<li>{emoji} {o.get('secCode','')} {o.get('secName','')} 均价{ap:.2f}×{o.get('tradeCount',0)}</li>"
     report += "</ul>"
 
     # 持仓快照

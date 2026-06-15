@@ -1,0 +1,14 @@
+# MX Trader Bridge — A股自动交易 cron
+PROJ=/home/ubuntu/projects/mx-trader-bridge
+PY=/home/ubuntu/projects/mx-trader-bridge/.venv/bin/python
+
+# 09:25 决策（盘前选股）
+25 9 * * 1-5 cd $PROJ && $PY decision.py >> logs/decision.log 2>&1
+# 09:30 建仓
+30 9 * * 1-5 cd $PROJ && $PY morning_trade.py >> logs/morning.log 2>&1
+# 09:35-14:55 每5min 盯盘
+*/5 9-14 * * 1-5 cd $PROJ && $PY monitor.py >> logs/monitor.log 2>&1
+# 15:30 收盘复盘
+30 15 * * 1-5 cd $PROJ && $PY recap.py >> logs/recap.log 2>&1
+# 周日 20:00 AI 反思
+0 20 * * 0 cd $PROJ && $PY reflect.py >> logs/reflect.log 2>&1

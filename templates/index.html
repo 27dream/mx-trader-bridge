@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="UTF-8"><title>MX Trader Bridge 控制台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,'PingFang SC',sans-serif;background:#0a0e1a;color:#e4e7ee;padding:20px;max-width:1200px;margin:0 auto}
+h1{font-size:22px;margin-bottom:6px;background:linear-gradient(90deg,#5eead4,#a78bfa);-webkit-background-clip:text;color:transparent}
+.sub{color:#7d8290;font-size:13px;margin-bottom:24px}
+.card{background:#131826;border:1px solid #1f2538;border-radius:12px;padding:20px;margin-bottom:16px}
+.card h3{font-size:15px;margin-bottom:14px;color:#a78bfa}
+.row{display:grid;grid-template-columns:140px 1fr;gap:12px;margin-bottom:10px;align-items:center}
+.row label{font-size:13px;color:#9ca3af}
+input,select,textarea{background:#0a0e1a;border:1px solid #1f2538;color:#e4e7ee;padding:8px 10px;border-radius:6px;font-size:13px;width:100%;font-family:monospace}
+input:focus,select:focus{outline:none;border-color:#5eead4}
+button{background:#5eead4;color:#0a0e1a;border:0;padding:8px 16px;border-radius:6px;font-weight:600;cursor:pointer;font-size:13px;margin-right:8px}
+button:hover{background:#2dd4bf}
+button.ghost{background:transparent;color:#a78bfa;border:1px solid #a78bfa}
+button.ghost:hover{background:rgba(167,139,250,.1)}
+button.danger{background:#f87171;color:#fff}
+.status{padding:10px;border-radius:6px;font-size:12px;margin-top:10px;font-family:monospace;white-space:pre-wrap;max-height:300px;overflow:auto}
+.ok{background:rgba(94,234,212,.1);color:#5eead4;border:1px solid #5eead4}
+.err{background:rgba(248,113,113,.1);color:#f87171;border:1px solid #f87171}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.tag{display:inline-block;padding:2px 8px;border-radius:4px;background:#1f2538;font-size:11px;margin-right:6px}
+.green{color:#5eead4}.red{color:#f87171}
+table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+th,td{padding:8px;text-align:left;border-bottom:1px solid #1f2538}
+th{color:#7d8290;font-weight:500}
+.hint{font-size:11px;color:#7d8290;margin-top:4px}
+a{color:#5eead4;text-decoration:none}
+.docs{font-size:11px}
+</style></head><body>
+
+<h1>🚀 MX Trader Bridge 控制台</h1>
+<p class="sub">stockgpt-review 决策 → 妙想模拟盘自动下单 · 本地端口 8787</p>
+
+<div class="card">
+<h3>🔑 妙想账户</h3>
+<div class="row"><label>API Key</label><input id="mx_apikey" type="password" value="{{cfg.mx_apikey}}" placeholder="mkt_xxx"></div>
+<div class="row"><label>API URL</label><input id="mx_api_url" value="{{cfg.mx_api_url}}"></div>
+<button onclick="save()">💾 保存配置</button>
+<button class="ghost" onclick="testMx()">测试连接</button>
+<div id="mx_status" class="status" style="display:none"></div>
+</div>
+
+<div class="card">
+<h3>🤖 AI 决策模型</h3>
+<div class="row"><label>提供商</label>
+<select id="llm_provider" onchange="onTplChange()">
+{% for k,v in templates.items() %}<option value="{{k}}" {% if cfg.llm_provider==k %}selected{% endif %}>{{v.name}}</option>{% endfor %}
+</select></div>
+<div class="row"><label>API Key</label><input id="llm_api_key" type="password" value="{{cfg.llm_api_key}}" placeholder="sk-xxx"></div>
+<div class="row"><label>Base URL</label><input id="llm_base_url" value="{{cfg.llm_base_url}}"></div>
+<div class="row"><label>Model</label><input id="llm_model" value="{{cfg.llm_model}}" placeholder="模型ID/接入点"><div class="hint" id="model_opts"></div></div>
+<div class="hint" id="docs_link"></div>
+<button onclick="testLlm()">测试 AI</button>
+<button class="ghost" onclick="save()">💾 保存配置</button>
+<div id="llm_status" class="status" style="display:none"></div>
+</div>
+
+<div class="card">
+<h3>📊 仓位 & 风控</h3>
+<div class="grid2">
+<div class="row"><label>仓位数</label><input id="position_count" type="number" value="{{cfg.position_count}}" min="1" max="5"></div>
+<div class="row"><label>每仓占比</label><input id="position_pct" type="number" step="0.1" min="0.1" max="1" value="{{cfg.position_pct}}"></div>
+</div>
+<div class="row"><label>微信 Webhook</label><input id="wechat_webhook" value="{{cfg.wechat_webhook}}" placeholder="可选"></div>
+<button class="ghost" onclick="save()">💾 保存</button>
+</div>
+
+<div class="card">
+<h3>🎮 手动控制</h3>
+<button onclick="run('morning')">🌅 立即建仓</button>
+<button onclick="run('monitor')">🔍 盯盘扫描</button>
+<button onclick="run('recap')">📊 收盘复盘</button>
+<button class="ghost" onclick="loadStatus()">🔄 刷新账户</button>
+<div id="run_status" class="status" style="display:none"></div>
+</div>
+
+<div class="card">
+<h3>💼 实时账户</h3>
+<div id="account_view">点击「刷新账户」加载...</div>
+</div>
+
+<script>
+const TPL = {{ templates|tojson }};
+function onTplChange(){
+  const k=document.getElementById('llm_provider').value, t=TPL[k];
+  if(t.base_url) document.getElementById('llm_base_url').value=t.base_url;
+  if(t.default_model) document.getElementById('llm_model').placeholder=t.default_model;
+  document.getElementById('model_opts').innerHTML='可选: '+(t.model_options||[]).join(' / ');
+  document.getElementById('docs_link').innerHTML=t.docs?`<a href="${t.docs}" target="_blank" class="docs">📖 ${t.docs}</a>`:'';
+  document.getElementById('llm_api_key').placeholder=t.placeholder_key||'';
+}
+async function save(silent){
+  const body={};['mx_apikey','mx_api_url','llm_provider','llm_api_key','llm_base_url','llm_model','wechat_webhook'].forEach(k=>body[k]=document.getElementById(k).value);
+  body.position_count=parseInt(document.getElementById('position_count').value);
+  body.position_pct=parseFloat(document.getElementById('position_pct').value);
+  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();if(!silent)alert(j.msg);
+}
+async function testMx(){
+  await save(true);
+  const r=await fetch('/api/test_mx',{method:'POST'});const j=await r.json();
+  const el=document.getElementById('mx_status');el.style.display='block';el.className='status '+(j.ok?'ok':'err');el.textContent=j.msg;
+}
+async function testLlm(){
+  await save(true);
+  const r=await fetch('/api/test_llm',{method:'POST'});const j=await r.json();
+  const el=document.getElementById('llm_status');el.style.display='block';el.className='status '+(j.ok?'ok':'err');el.textContent=j.msg;
+}
+async function run(t){
+  const el=document.getElementById('run_status');el.style.display='block';el.className='status';el.textContent='⏳ 执行中...';
+  const r=await fetch('/api/run/'+t,{method:'POST'});const j=await r.json();
+  el.className='status '+(j.ok?'ok':'err');el.textContent=j.msg;
+  loadStatus();
+}
+async function loadStatus(){
+  const r=await fetch('/api/status');const j=await r.json();
+  if(j.error){document.getElementById('account_view').innerHTML='<span class="red">❌ '+j.error+'</span>';return}
+  const b=j.balance||{};
+  let html=`<p><span class="tag">${b.accName||'-'}</span> 总资产 <strong>¥${(b.totalAssets||0).toLocaleString()}</strong> · 可用 ¥${(b.availBalance||0).toLocaleString()} · 持仓 ¥${(b.totalPosValue||0).toLocaleString()} · 净值 ${(b.nav||0).toFixed(3)}</p>`;
+  if(j.positions&&j.positions.length){
+    html+='<table><tr><th>代码</th><th>名称</th><th>数量</th><th>成本</th><th>现价</th><th>盈亏</th></tr>';
+    j.positions.forEach(p=>{const c=p.profit_pct>=0?'green':'red';html+=`<tr><td>${p.code}</td><td>${p.name}</td><td>${p.count}</td><td>${p.cost.toFixed(2)}</td><td>${p.price.toFixed(2)}</td><td class="${c}">${p.profit_pct.toFixed(2)}%</td></tr>`});
+    html+='</table>';
+  }else html+='<p style="color:#7d8290;font-size:12px">无持仓</p>';
+  if(j.recaps&&j.recaps.length){
+    html+='<h4 style="margin-top:14px;font-size:13px;color:#a78bfa">近7日</h4><table><tr><th>日期</th><th>总资产</th><th>当日盈亏</th><th>涨幅</th><th>备注</th></tr>';
+    j.recaps.forEach(r=>{const c=(r.day_profit||0)>=0?'green':'red';html+=`<tr><td>${r.date}</td><td>¥${(r.total_assets||0).toLocaleString()}</td><td class="${c}">${(r.day_profit||0).toFixed(0)}</td><td class="${c}">${(r.day_profit_pct||0).toFixed(2)}%</td><td style="font-size:11px">${r.notes||''}</td></tr>`});
+    html+='</table>';
+  }
+  document.getElementById('account_view').innerHTML=html;
+}
+onTplChange();loadStatus();
+</script>
+</body></html>

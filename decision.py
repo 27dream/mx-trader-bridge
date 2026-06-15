@@ -3,11 +3,15 @@ import os, json, requests
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
+from config_store import load as _load_cfg
+_cfg = _load_cfg()
 
-LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'ark')
-LLM_API_KEY = os.getenv('LLM_API_KEY', '')
-LLM_MODEL = os.getenv('LLM_MODEL', 'ark-code-latest')
-LLM_BASE_URL = os.getenv('LLM_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')
+LLM_PROVIDER = os.getenv('LLM_PROVIDER') or _cfg.get('llm_provider', 'ark')
+LLM_API_KEY  = os.getenv('LLM_API_KEY')  or _cfg.get('llm_api_key', '')
+LLM_MODEL    = os.getenv('LLM_MODEL')    or _cfg.get('llm_model', 'ark-code-latest')
+LLM_BASE_URL = os.getenv('LLM_BASE_URL') or _cfg.get('llm_base_url', 'https://ark.cn-beijing.volces.com/api/v3')
+MX_APIKEY    = os.getenv('MX_APIKEY')    or _cfg.get('mx_apikey', '')
+MX_API_URL   = os.getenv('MX_API_URL')   or _cfg.get('mx_api_url', 'https://mkapi2.dfcfs.com/finskillshub')
 
 def chat(messages, temperature=0.7) -> str:
     """调用 LLM"""
@@ -22,22 +26,45 @@ def chat(messages, temperature=0.7) -> str:
 
 # ---------- 数据获取（东方财富免费接口） ----------
 
-def get_zt_pool():
-    """昨日涨停池（东财）"""
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y%m%d')
-    url = f"https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize=80&sort=fbt:asc&date={yesterday}"
+# ---------- 数据获取（妙想 stock-screen API） ----------
+
+def mx_screen(keyword: str, page_size: int = 80):
+    """调用妙想 stock-screen 真实选股，返回候选列表"""
+    if not MX_APIKEY:
+        print("⚠️  无 MX_APIKEY，无法选股")
+        return []
     try:
-        r = requests.get(url, timeout=10).json()
-        return [s for s in (r.get('data', {}).get('pool') or [])]
-    except: return []
+        r = requests.post(
+            f"{MX_API_URL}/api/claw/stock-screen",
+            headers={'apikey': MX_APIKEY, 'Content-Type': 'application/json'},
+            json={'keyword': keyword},
+            timeout=30,
+        )
+        j = r.json()
+        rows = (((j.get('data') or {}).get('data') or {})
+                .get('allResults') or {}).get('result', {}).get('dataList') or []
+        # 标准化字段：code / name / price / chg / amount
+        out = []
+        for it in rows[:page_size]:
+            out.append({
+                'code': it.get('SECURITY_CODE') or it.get('SECUCODE', '')[:6],
+                'name': it.get('SECURITY_SHORT_NAME', ''),
+                'price': float(it.get('NEWEST_PRICE') or 0),
+                'chg': float(it.get('CHG') or 0),
+                'amount': float(it.get('DEAL_AMOUNT') or 0),
+            })
+        return [x for x in out if x['code']]
+    except Exception as e:
+        print(f"⚠️  mx_screen 失败: {e}")
+        return []
+
+def get_zt_pool():
+    """昨日涨停池（妙想真实选股）"""
+    return mx_screen("昨日涨停 今日未一字开 流通市值30-300亿")
 
 def get_hot_stocks(top_n=30):
-    """涨幅榜 top N（沪深A）"""
-    url = f"https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz={top_n}&po=1&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f3,f5,f6"
-    try:
-        r = requests.get(url, timeout=10).json()
-        return r.get('data', {}).get('diff') or []
-    except: return []
+    """今日强势股 top N（妙想真实选股）"""
+    return mx_screen(f"今日涨幅3-7% 成交额>5亿 流通市值50-500亿 非ST", page_size=top_n)
 
 def get_market_overview():
     """大盘指数：上证、深证、创业板"""
@@ -50,14 +77,27 @@ def get_market_overview():
 
 # ---------- AI 生成策略 ----------
 
-SYSTEM_PROMPT = """你是A股资深量化交易员，专注超短线（T+1）。今天将对2个仓位（每仓50%资金）下单，全自动执行。
+SYSTEM_PROMPT = """你是A股资深量化交易员，专注超短线策略，全自动执行。今天对2个仓位（每仓50%资金）下单。
 
-你的任务：
-1. 根据当前市场情绪和涨停板/热股数据，选出 **2 只最有可能明天上涨的股票**
-2. 给出每只股票的：买入价、止损价（-3%~-5%）、止盈价（+5%~+8%）、最大持仓时长（1-3天）
+【A股核心交易规则 — 必须严格遵守】
+1. **T+1**：当日买入的股票次日才可卖，故选股要看次日及之后2-3日的预期，不指望日内套利
+2. **涨跌停板**：
+   - 主板（60/00/000开头）：±10%
+   - 创业板（300/301）/ 科创板（688）：±20%
+   - ST/*ST：±5%
+   - **绝对不要选今日已涨停的股票**（封板买不进，开板风险大；昨日涨停今日开盘竞价后再判断）
+3. **最小交易单位**：100股整数倍，单笔最低100股
+4. **交易时间**：9:15-9:25集合竞价 | 9:30-11:30 + 13:00-15:00 连续竞价 | 14:57-15:00 收盘集合竞价
+5. **禁选**：ST/*ST 股、停牌股、退市风险股、新股上市首日（涨跌幅±44%规则复杂）
+6. **一字板/连板天梯**：连续涨停3天以上的"高位股"次日炸板风险高，新手避开（除非明确是主升浪龙头）
+7. **价格规则**：限价单价格须在前收盘价±10%(主板)/20%(创科)区间内，否则废单
+
+【今日策略】
+1. 优先候选：**昨日涨停今日未开板/小幅高开** + **早盘放量首板** + **强势板块次新主升**
+2. 给出每只股票：买入价提示、止损价（-3%~-5%）、止盈价（+5%~+8%）、最大持仓时长（1-3天）
 3. 给出整体策略名称和简短理由
 
-输出严格的 JSON 格式：
+【输出严格JSON】
 {
   "strategy_name": "策略名",
   "market_view": "大盘观点（1句）",
@@ -65,6 +105,7 @@ SYSTEM_PROMPT = """你是A股资深量化交易员，专注超短线（T+1）。
     {
       "code": "6位代码",
       "name": "股票名",
+      "board": "main/chinext/star/bj",
       "buy_price_hint": "开盘价/集合竞价/不超过XX元",
       "stop_loss_pct": -0.03,
       "take_profit_pct": 0.06,
@@ -78,7 +119,7 @@ SYSTEM_PROMPT = """你是A股资深量化交易员，专注超短线（T+1）。
   }
 }
 
-只输出 JSON，不要 markdown 包裹。"""
+只输出 JSON，不要 markdown 包裹。注意：T+1 当日买入次日才可卖，故止损/止盈触发最早是次日。"""
 
 def generate_decision():
     """生成今日决策"""

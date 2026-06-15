@@ -3,15 +3,30 @@ import os, json, requests
 from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
+from config_store import load as _load_cfg
+_cfg = _load_cfg()
 
-MX_APIKEY = os.getenv('MX_APIKEY')
-MX_API_URL = os.getenv('MX_API_URL', 'https://mkapi2.dfcfs.com/finskillshub')
+MX_APIKEY  = os.getenv('MX_APIKEY')  or _cfg.get('mx_apikey', '')
+MX_API_URL = os.getenv('MX_API_URL') or _cfg.get('mx_api_url', 'https://mkapi2.dfcfs.com/finskillshub')
+
+class TradeError(Exception):
+    """下单业务失败（rc != 0）"""
+    pass
 
 def _post(path: str, body: dict) -> dict:
     r = requests.post(f"{MX_API_URL}{path}",
         headers={'apikey': MX_APIKEY, 'Content-Type': 'application/json'},
         json=body, timeout=15)
     return r.json()
+
+def _trade(body: dict) -> dict:
+    """下单 + rc=0 校验。rc!=0 抛 TradeError，含完整 response"""
+    res = _post('/api/claw/mockTrading/trade', body)
+    rc = (res.get('data') or {}).get('result', {}).get('rc')
+    if rc != 0:
+        msg = (res.get('data') or {}).get('result', {}).get('rmsg') or res.get('msg') or 'unknown'
+        raise TradeError(f"下单失败 rc={rc} msg={msg} body={body} resp={res}")
+    return res
 
 def get_balance() -> dict:
     """查资金 → {totalAssets, availBalance, totalPosPct}"""
@@ -43,7 +58,7 @@ def buy(stock_code: str, quantity: int, price: Optional[float] = None) -> dict:
     else:
         body['useMarketPrice'] = False
         body['price'] = round(price, 2)
-    return _post('/api/claw/mockTrading/trade', body)
+    return _trade(body)
 
 def sell(stock_code: str, quantity: int, price: Optional[float] = None) -> dict:
     """卖出：price=None 则市价单"""
@@ -54,7 +69,7 @@ def sell(stock_code: str, quantity: int, price: Optional[float] = None) -> dict:
     else:
         body['useMarketPrice'] = False
         body['price'] = round(price, 2)
-    return _post('/api/claw/mockTrading/trade', body)
+    return _trade(body)
 
 def cancel_all() -> dict:
     """一键撤单"""

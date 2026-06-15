@@ -1,10 +1,10 @@
-"""盘中盯盘：止损/止盈/超时强平"""
+"""盘中盯盘：止损/止盈/超时强平（含成交校验 + 告警）"""
 import os, json, time
 from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
-import trader, db
+import trader, db, notifier
 from morning_trade import get_realtime_price
 
 def check_and_exit():
@@ -51,12 +51,30 @@ def check_and_exit():
         print(f"  {code} {name} 成本{cost:.2f} 现价{price:.2f} 盈亏{pnl_pct*100:+.2f}% | sl={sl*100:.1f}% tp={tp*100:.1f}% | {reason or '持有'}")
 
         if reason:
-            res = trader.sell(code, qty, price=None)  # 市价快速出
-            order_id = res.get('data', {}).get('orderId') if isinstance(res.get('data'), dict) else ''
-            status = 'submitted' if res.get('code') == '200' else 'failed'
-            db.log_trade(today, code, name, 'SELL', price, qty, order_id, status, reason, dec['id'], res)
-            db.log_signal(today, code, reason.split()[0], f"{name} {reason}")
-            print(f"  ⛔ 卖出 → {res.get('code')} {res.get('message')}")
+            try:
+                # ✅ 用 sell_safe：内含 rc=0 校验 + 成交轮询
+                r = trader.sell_safe(code, qty, price=None)
+                order_id = (r.get('order_resp', {}).get('data', {}).get('result') or {}).get('orderId', '') \
+                           or r.get('order_resp', {}).get('data', {}).get('orderId', '')
+                fill = r.get('fill_info', {})
+                fill_price = fill.get('avgPrice', price) or price
+                status = 'filled' if r.get('ok') else 'submit_only'
+                db.log_trade(today, code, name, 'SELL', fill_price, qty, order_id,
+                             status, reason, dec['id'], r)
+                db.log_signal(today, code, reason.split()[0], f"{name} {reason}")
+
+                if r.get('ok'):
+                    print(f"  ✂️ 卖出已成交 ¥{fill_price:.2f} × {qty}")
+                    notifier.notify_fill(code, name, 'SELL', fill_price, qty, reason)
+                else:
+                    print(f"  ⚠️ 卖单提交但未成交：stage={r.get('stage')} fill={fill}")
+                    notifier.alert(f"⚠️ 卖单未成交 {code} {name}（{reason}）stage={r.get('stage')}",
+                                   level='warn', title='卖单异常')
+            except trader.TradeError as e:
+                print(f"  ❌ 卖单被拒: {e}")
+                db.log_trade(today, code, name, 'SELL', price, qty, '', 'rejected',
+                             f"{reason}/rejected", dec['id'], {'error': str(e)})
+                notifier.notify_reject(code, name, f"卖单被拒({reason}): {str(e)[:150]}")
             time.sleep(1)
 
 if __name__ == '__main__':

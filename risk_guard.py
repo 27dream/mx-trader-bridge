@@ -96,6 +96,64 @@ def check_blacklist(positions: list) -> list:
             })
     return actions
 
+
+# ---------- 下单前预检（建仓时同步调用） ----------
+
+def pre_check_buy(code: str, qty: int, price: float,
+                  balance: dict = None, positions: list = None) -> dict:
+    """下单前 4 道预检：黑名单 / 当日已熔断 / 仓位超限 / 资金不足
+
+    Returns: {'ok': bool, 'reason': str|None, 'detail': dict}
+    """
+    try:
+        if balance is None:
+            balance = get_balance()
+        if positions is None:
+            positions = get_positions()
+    except Exception as e:
+        return {'ok': False, 'reason': 'balance_query_failed', 'detail': {'err': str(e)}}
+
+    bal_data = balance.get('data') or {}
+    total_assets = bal_data.get('totalAssets', 0)
+    avail = bal_data.get('availBalance', 0)
+    day_pnl_pct = bal_data.get('dayProfitPct')
+
+    # 1. 黑名单
+    if code in BLACKLIST_CODES:
+        return {'ok': False, 'reason': 'blacklist', 'detail': {'code': code}}
+
+    # 2. 当日已熔断（亏损超阈值不允许加仓）
+    if day_pnl_pct is not None and day_pnl_pct <= -MAX_DAILY_LOSS_PCT * 100:
+        return {'ok': False, 'reason': 'daily_loss_circuit_breaker',
+                'detail': {'day_pnl_pct': day_pnl_pct}}
+
+    # 3. 资金不足
+    cost = price * qty
+    if cost > avail:
+        return {'ok': False, 'reason': 'insufficient_balance',
+                'detail': {'need': cost, 'avail': avail}}
+
+    # 4. 仓位预测：买入后该股市值占比是否超阈值
+    existing_value = 0
+    for p in positions:
+        if p.get('secCode') == code:
+            cnt = p.get('count', 0)
+            pp = p.get('_price') or (p.get('price', 0) / 100)
+            existing_value = pp * cnt
+            break
+    new_value = existing_value + cost
+    new_pct = new_value / total_assets if total_assets > 0 else 0
+    if new_pct > MAX_SINGLE_POS_PCT:
+        return {'ok': False, 'reason': 'single_pos_over_limit',
+                'detail': {'predicted_pct': round(new_pct, 3),
+                           'limit': MAX_SINGLE_POS_PCT}}
+
+    return {'ok': True, 'reason': None, 'detail': {
+        'predicted_pct': round(new_pct, 3),
+        'cost': cost, 'avail_after': avail - cost
+    }}
+
+
 # ---------- 主流程 ----------
 
 def run(dry_run: bool = False):

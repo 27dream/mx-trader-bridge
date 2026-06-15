@@ -1,10 +1,10 @@
-"""主流程：AI决策 → 妙想下单（含白名单 + 成交校验）"""
+"""主流程：AI决策 → 妙想下单（含白名单 + 风控预检 + 成交校验 + 多通道告警）"""
 import os, sys, json, requests, time
 from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
-import trader, db, decision as dm
+import trader, db, decision as dm, risk_guard, notifier
 
 POSITION_COUNT = int(os.getenv('POSITION_COUNT', 2))
 POSITION_PCT = float(os.getenv('POSITION_PCT', 0.5))
@@ -119,8 +119,14 @@ def run_morning_trade():
     print("🧠 调用 AI 生成今日策略...")
     decision = dm.generate_decision()
     if not decision or not decision.get('picks'):
-        print("❌ 决策生成失败"); return
+        notifier.alert("❌ 决策生成失败，建仓流程终止", level='warn', title='决策失败')
+        return
     print(f"📋 策略：{decision.get('strategy_name')} | 大盘：{decision.get('market_view', '')}")
+    notifier.notify_decision(
+        decision.get('strategy_name', ''),
+        decision.get('picks', []),
+        decision.get('market_view', '')
+    )
 
     # 5. 落库
     decision_id = db.log_decision(today, decision.get('strategy_name', ''),
@@ -166,6 +172,19 @@ def run_morning_trade():
             print(f"⚠️  {code} 仓位不足以买100股 (price={limit_price})，跳过"); continue
         print(f"🛒 买入 {code} {name} | 限价 {limit_price} | 数量 {qty} | 占用 ¥{limit_price*qty:,.0f}")
 
+        # ✅ 风控预检（mx-risk-guard：黑名单/熔断/资金/集中度）
+        rg = risk_guard.pre_check_buy(code, qty, limit_price, balance=bal, positions=pos)
+        if not rg['ok']:
+            print(f"   🛡️ 风控拒单: {rg['reason']} | {rg['detail']}")
+            notifier.notify_reject(code, name, f"{rg['reason']}: {rg['detail']}")
+            db.log_signal(today, code, f"RISK_REJECT_{rg['reason'].upper()}",
+                          json.dumps(rg['detail'], ensure_ascii=False))
+            db.log_trade(today, code, name, 'BUY', limit_price, qty, '',
+                         'risk_rejected', f"risk_guard:{rg['reason']}",
+                         decision_id, rg)
+            continue
+        print(f"   ✅ 风控通过 | 预测仓位 {rg['detail'].get('predicted_pct',0)*100:.1f}% | 余额 ¥{rg['detail'].get('avail_after',0):,.0f}")
+
         # 提交订单（trader._trade 内部已 rc=0 校验，rc!=0 抛 TradeError）
         try:
             res = trader.buy(code, qty, price=limit_price)
@@ -174,6 +193,7 @@ def run_morning_trade():
             print(f"   ✅ 已提交 orderId={order_id}")
         except trader.TradeError as e:
             print(f"   ❌ 下单被拒: {e}")
+            notifier.notify_reject(code, name, str(e)[:200])
             db.log_trade(today, code, name, 'BUY', limit_price, qty, '',
                          'rejected', f"strategy:{decision.get('strategy_name')}/rejected",
                          decision_id, {'error': str(e)})
@@ -189,15 +209,21 @@ def run_morning_trade():
                          f"strategy:{decision.get('strategy_name')}",
                          decision_id, res)
             print(f"   🎯 已成交 ¥{result['fill_price']:.2f} × {result['fill_qty']}")
+            notifier.notify_fill(code, name, 'BUY',
+                                 result['fill_price'], result['fill_qty'],
+                                 decision.get('strategy_name', ''))
         else:
             db.log_trade(today, code, name, 'BUY', limit_price, qty,
                          result['order_id'], 'pending',
                          f"strategy:{decision.get('strategy_name')}/timeout",
                          decision_id, res)
             print(f"   ⏰ {FILL_POLL_TIMES*FILL_POLL_INTERVAL}s 内未成交（last_status={result.get('last_status')}），后续 monitor 继续跟踪")
+            notifier.alert(f"⏰ 买单未成交 {code} {name} ¥{limit_price} × {qty}（status={result.get('last_status')}）",
+                           level='warn', title='买单超时')
         time.sleep(1)
 
     print(f"\n✅ 建仓完成。决策ID={decision_id}")
+    notifier.notify(f"✅ 建仓流程结束｜决策ID={decision_id}", level='success', title='建仓完成')
 
 if __name__ == '__main__':
     db.init_db()

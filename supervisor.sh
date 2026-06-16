@@ -50,7 +50,7 @@ while true; do
     rotate_if_needed "$LOG_FILE"
 
     echo "[supervisor] 启动 scheduler.py @ $(date)" | tee -a "$LOG_DIR/supervisor.log"
-    "$PYTHON" scheduler.py >> "$LOG_FILE" 2>&1
+    PYTHONUNBUFFERED=1 "$PYTHON" -u scheduler.py >> "$LOG_FILE" 2>&1
     EXIT_CODE=$?
 
     NOW=$(date +%s)

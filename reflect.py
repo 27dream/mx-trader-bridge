@@ -220,6 +220,80 @@ def weekly_reflect(silent: bool = False, force_dry_run: bool = False) -> str:
     if not silent:
         notifier.notify("\n".join(lines), level='info', title=f"周复盘+自动调参")
 
+    # 📄 PDF 周报推送到企微群（v3 新增）
+    if not silent:
+        try:
+            today = datetime.now().strftime('%Y-%m-%d')
+            week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            week_no = datetime.now().isocalendar()[1]
+            md = [f"# 📈 周复盘报告 W{week_no}",
+                  f"\n> 区间：{week_ago} ~ {today}\n"]
+
+            # LLM 总结
+            md.append("## 🤖 AI 总结\n")
+            md.append(f"> {parsed.get('summary', summary)}\n")
+
+            # 战绩概览
+            md.append("## 📊 本周战绩\n")
+            md.append("| 指标 | 数值 |")
+            md.append("|---|---|")
+            md.append(f"| 📈 交易笔数 | {metrics['trade_count']} |")
+            md.append(f"| 🎯 胜率 | **{metrics['win_rate']*100:.1f}%** |")
+            md.append(f"| 💰 净盈亏 | **¥{metrics['net_pnl']:+,.0f}** |")
+            md.append(f"| 📦 在持仓位 | {len(metrics['open_positions'])} 只 |")
+
+            # 亮点 / 弱点
+            sp = parsed.get('strong_points') or []
+            wp = parsed.get('weak_points') or []
+            if sp:
+                md.append("\n## ✨ 亮点\n")
+                for s in sp: md.append(f"- {s}")
+            if wp:
+                md.append("\n## ⚠️ 弱点\n")
+                for w in wp: md.append(f"- {w}")
+
+            # 调参明细
+            md.append(f"\n## 🔧 自动调参 [{('已应用' if auto_apply else 'DRY-RUN')}]\n")
+            if apply_results:
+                md.append(f"通过 **{applied}** / 拒绝 **{rejected}**\n")
+                md.append("| 状态 | 参数 | 旧值 | 新值 | 备注 |")
+                md.append("|---|---|---|---|---|")
+                for r in apply_results:
+                    icon = {'applied':'✅ 应用','clipped':'⚠️ 截断','dry_run':'🟦 演练','rejected':'❌ 拒绝'}.get(r['status'], r['status'])
+                    tag = f"`{r['scope']}.{r['key']}`"
+                    if r['status'] in ('applied','clipped','dry_run'):
+                        md.append(f"| {icon} | {tag} | {r.get('old_value')} | **{r.get('new_value')}** | {r.get('reason','')[:30]} |")
+                    else:
+                        md.append(f"| {icon} | {tag} | - | - | {r.get('detail','')[:50]} |")
+            else:
+                md.append("> 本周无参数调整建议（维持现状最优）\n")
+
+            # 平仓明细
+            cl = metrics['closed_trades']
+            if cl:
+                md.append("\n## 📋 已平仓明细\n")
+                md.append("| 代码 | 名称 | 买入 | 卖出 | 收益% |")
+                md.append("|---|---|---|---|---|")
+                for t in cl[:20]:
+                    pct = t['pnl_pct'] * 100
+                    md.append(f"| {t['code']} | {t['name']} | {t['buy_price']:.2f} | {t['sell_price']:.2f} | **{pct:+.2f}%** |")
+
+            # 关注列表
+            wl = parsed.get('watch_list') or []
+            if wl:
+                md.append("\n## 👀 下周关注\n")
+                for w in wl: md.append(f"- `{w}`")
+
+            md.append(f"\n---\n> 📝 报告时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+            r = notifier.notify_pdf("\n".join(md), filename=f"weekly_W{week_no}_{today}.pdf")
+            if r['ok']:
+                print(f"📄 PDF 周报已推送到企微 (media_id={r['media_id'][:20]}...)")
+            else:
+                print("📄 PDF 周报推送失败（已退至文本通道）")
+        except Exception as e:
+            print(f"  PDF 周报异常：{e}")
+
     return "\n".join(lines)
 
 

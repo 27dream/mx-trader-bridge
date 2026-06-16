@@ -1,9 +1,9 @@
-"""统一告警通道：飞书 webhook / 微信(server酱) / 控制台
+"""统一告警通道：企业微信群机器人 / 飞书 webhook / Server酱 / 控制台
 
 环境变量（.env 任选其一即可，不配则只打印控制台）：
-    FEISHU_WEBHOOK   — 飞书自定义机器人 webhook
-    SERVERCHAN_KEY   — Server酱 SCT 密钥
-    HERMES_TARGET    — 走 Hermes 时的 platform target（可选，用于 webhook→hermes 桥接）
+    WECOM_BOT_WEBHOOK — 企业微信群机器人 webhook（推荐 ✅）
+    FEISHU_WEBHOOK    — 飞书自定义机器人 webhook
+    SERVERCHAN_KEY    — Server酱 SCT 密钥
 
 用法：
     from notifier import notify, alert
@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+WECOM_BOT_WEBHOOK = os.getenv('WECOM_BOT_WEBHOOK', '').strip()
 FEISHU_WEBHOOK = os.getenv('FEISHU_WEBHOOK', '').strip()
 SERVERCHAN_KEY = os.getenv('SERVERCHAN_KEY', '').strip()
 
@@ -27,6 +28,29 @@ LEVEL_PREFIX = {
 }
 
 
+def _to_wecom_bot(text: str, level: str = 'info', use_markdown: bool = True) -> bool:
+    """企业微信群机器人。critical/warn 用 markdown 染色，info/success 用纯文本。"""
+    if not WECOM_BOT_WEBHOOK:
+        return False
+    try:
+        if use_markdown and level in ('critical', 'warn'):
+            color = 'warning' if level == 'warn' else 'info'
+            # 企业微信只支持 info(灰)/comment(灰)/warning(橙) 三种
+            if level == 'critical':
+                color = 'warning'  # 红色不支持，用橙色代替
+            payload = {
+                'msgtype': 'markdown',
+                'markdown': {'content': f"<font color=\"{color}\">**[{level.upper()}]**</font>\n{text}"}
+            }
+        else:
+            payload = {'msgtype': 'text', 'text': {'content': text}}
+        r = requests.post(WECOM_BOT_WEBHOOK, json=payload, timeout=8)
+        return r.json().get('errcode') == 0
+    except Exception as e:
+        print(f"  notifier.wecom fail: {e}")
+        return False
+
+
 def _to_feishu(text: str, level: str = 'info') -> bool:
     if not FEISHU_WEBHOOK:
         return False
@@ -35,7 +59,8 @@ def _to_feishu(text: str, level: str = 'info') -> bool:
             'msg_type': 'text',
             'content': {'text': f"[{level.upper()}] {text}"}
         }, timeout=8)
-        return r.json().get('StatusCode', r.json().get('code')) in (0, 200, '0', '200')
+        body = r.json()
+        return body.get('code', body.get('StatusCode')) in (0, 200, '0', '200')
     except Exception as e:
         print(f"  notifier.feishu fail: {e}")
         return False
@@ -59,7 +84,7 @@ def _to_serverchan(title: str, text: str) -> bool:
 def notify(text: str, level: str = 'info', title: str = None) -> dict:
     """发送一条消息到所有已配置通道。
 
-    Returns: {console, feishu, serverchan} 各通道布尔结果
+    Returns: {console, wecom, feishu, serverchan} 各通道布尔结果
     """
     prefix = LEVEL_PREFIX.get(level, '')
     full = f"{prefix}{text}"
@@ -68,7 +93,8 @@ def notify(text: str, level: str = 'info', title: str = None) -> dict:
     # 控制台总是打
     print(f"[{ts}] {full}")
 
-    out = {'console': True, 'feishu': False, 'serverchan': False}
+    out = {'console': True, 'wecom': False, 'feishu': False, 'serverchan': False}
+    out['wecom'] = _to_wecom_bot(full, level)
     out['feishu'] = _to_feishu(full, level)
     out['serverchan'] = _to_serverchan(title or f"MX-Trader {level}", full)
     return out
@@ -105,6 +131,7 @@ def notify_circuit_break(reason: str):
 if __name__ == '__main__':
     # 自检
     print("=== notifier 自检 ===")
+    print(f"WECOM_BOT_WEBHOOK 配置: {'✅' if WECOM_BOT_WEBHOOK else '❌ (未配置)'}")
     print(f"FEISHU_WEBHOOK 配置: {'✅' if FEISHU_WEBHOOK else '❌ (未配置)'}")
     print(f"SERVERCHAN_KEY 配置: {'✅' if SERVERCHAN_KEY else '❌ (未配置)'}")
     r = notify("notifier 自检：这是一条 info 测试消息", level='info', title='自检')

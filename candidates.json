@@ -1,0 +1,45 @@
+{
+  "date": "2026-06-17",
+  "gen_time": "2026-06-17 00:06:49",
+  "count": 0,
+  "picks": [],
+  "params": {
+    "A": {
+      "name": "强势股回调",
+      "lookback_days": 20,
+      "min_gain_pct": 15.0,
+      "pullback_to_ma": 10,
+      "max_picks": 3,
+      "sl_pct": -0.03,
+      "tp_pct": 0.06,
+      "trail_trigger_pct": 0.05,
+      "trail_giveback_pct": 0.02,
+      "max_position_pct": 0.2,
+      "min_confidence": 0.6
+    },
+    "B": {
+      "name": "首板跟进",
+      "market_cap_min": 30,
+      "market_cap_max": 150,
+      "max_picks": 3,
+      "sl_pct": -0.04,
+      "tp_pct": 0.07,
+      "trail_trigger_pct": 0.05,
+      "trail_giveback_pct": 0.025,
+      "max_position_pct": 0.2,
+      "min_confidence": 0.65
+    },
+    "C": {
+      "name": "主力净流入",
+      "main_inflow_min": 5000,
+      "volume_ratio_min": 2.0,
+      "max_picks": 2,
+      "sl_pct": -0.03,
+      "tp_pct": 0.05,
+      "trail_trigger_pct": 0.04,
+      "trail_giveback_pct": 0.02,
+      "max_position_pct": 0.2,
+      "min_confidence": 0.6
+    }
+  }
+}

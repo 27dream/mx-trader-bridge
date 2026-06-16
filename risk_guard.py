@@ -15,12 +15,19 @@ import db
 
 _cfg = _load_cfg()
 
-# ---------- 风控阈值（可配置） ----------
-MAX_SINGLE_POS_PCT = float(os.getenv('RG_MAX_SINGLE_POS', '0.55'))   # 单股≤55% 总资产
-MAX_DAILY_LOSS_PCT = float(os.getenv('RG_MAX_DAILY_LOSS', '0.03'))   # 单日亏损≥3% 全清仓
-MAX_HOLD_DAYS      = int(os.getenv('RG_MAX_HOLD_DAYS', '5'))         # 持仓>5 天强制平
-MAX_DRAWDOWN_PCT   = float(os.getenv('RG_MAX_DRAWDOWN', '0.08'))     # 单股回撤≥8% 平
+# ---------- 风控阈值 v2（可配置） ----------
+MAX_SINGLE_POS_PCT = float(os.getenv('RG_MAX_SINGLE_POS', '0.20'))   # 单股≤20% 总资产 (v2)
+MAX_DAILY_LOSS_PCT = float(os.getenv('RG_MAX_DAILY_LOSS', '0.03'))   # 单日亏损≥3% 停开新仓 (v2: 不强制清仓)
+HALT_BUY_ON_DAILY_LOSS = os.getenv('RG_HALT_BUY_ON_LOSS', '1') == '1'  # 触发熔断只停买,不强卖
+MAX_HOLD_DAYS      = int(os.getenv('RG_MAX_HOLD_DAYS', '5'))         # 持仓>5 天强制平 (兜底)
+MAX_DRAWDOWN_PCT   = float(os.getenv('RG_MAX_DRAWDOWN', '0.08'))     # 单股回撤≥8% 平 (兜底,monitor内已-3%)
 BLACKLIST_CODES    = set((os.getenv('RG_BLACKLIST') or '').split(',')) - {''}
+
+# ---------- 集合竞价禁单时段 ----------
+def in_call_auction(now_hm: str = None) -> bool:
+    if now_hm is None:
+        now_hm = datetime.now().strftime('%H:%M')
+    return ('09:20' <= now_hm <= '09:25') or ('14:57' <= now_hm <= '15:00')
 
 LOG_DIR = os.path.dirname(os.path.abspath(__file__)) + '/logs'
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -57,16 +64,22 @@ def check_single_position(positions: list, total_assets: float) -> list:
     return actions
 
 def check_daily_loss(balance: dict) -> list:
-    """规则2：单日亏损超阈值 → 全部清仓"""
+    """规则2：单日亏损超阈值 → 仅停开新仓（v2: 不再强制清仓）"""
     actions = []
     day_pnl_pct = (balance.get('data') or {}).get('dayProfitPct')
-    # 妙想 dayProfitPct 字段已是百分数值（如 -3.2 表示 -3.2%）
     if day_pnl_pct is not None and day_pnl_pct <= -MAX_DAILY_LOSS_PCT * 100:
-        actions.append({
-            'reason': 'daily_loss_circuit_breaker',
-            'day_pnl_pct': day_pnl_pct,
-            'action': 'CLEAR_ALL'
-        })
+        if HALT_BUY_ON_DAILY_LOSS:
+            actions.append({
+                'reason': 'daily_loss_halt_buy',
+                'day_pnl_pct': day_pnl_pct,
+                'action': 'HALT_BUY_ONLY'
+            })
+        else:
+            actions.append({
+                'reason': 'daily_loss_circuit_breaker',
+                'day_pnl_pct': day_pnl_pct,
+                'action': 'CLEAR_ALL'
+            })
     return actions
 
 def check_drawdown(positions: list) -> list:
@@ -101,10 +114,15 @@ def check_blacklist(positions: list) -> list:
 
 def pre_check_buy(code: str, qty: int, price: float,
                   balance: dict = None, positions: list = None) -> dict:
-    """下单前 4 道预检：黑名单 / 当日已熔断 / 仓位超限 / 资金不足
+    """下单前 5 道预检：集合竞价 / 黑名单 / 当日已熔断 / 仓位超限 / 资金不足
 
     Returns: {'ok': bool, 'reason': str|None, 'detail': dict}
     """
+    # 0. 集合竞价禁单
+    if in_call_auction():
+        return {'ok': False, 'reason': 'call_auction_no_trade',
+                'detail': {'time': datetime.now().strftime('%H:%M')}}
+
     try:
         if balance is None:
             balance = get_balance()
@@ -154,6 +172,10 @@ def pre_check_buy(code: str, qty: int, price: float,
     }}
 
 
+# v2 别名：executor.py 调用 check_buy
+check_buy = pre_check_buy
+
+
 # ---------- 主流程 ----------
 
 def run(dry_run: bool = False):
@@ -190,7 +212,13 @@ def run(dry_run: bool = False):
     # 执行
     for a in all_actions:
         try:
-            if a['reason'] == 'daily_loss_circuit_breaker':
+            if a['reason'] == 'daily_loss_halt_buy':
+                # v2: 仅停买，不强卖（写状态文件给 executor 读）
+                halt_file = os.path.join(os.path.dirname(__file__), '.halt_buy.flag')
+                with open(halt_file, 'w') as f:
+                    f.write(f"{datetime.now().isoformat()} day_pnl={a['day_pnl_pct']}")
+                log(f'      🛑 已写入 .halt_buy.flag (day_pnl={a["day_pnl_pct"]}%)')
+            elif a['reason'] == 'daily_loss_circuit_breaker':
                 # 全部清仓（先撤单再清持仓）
                 cancel_all()
                 for p in positions:

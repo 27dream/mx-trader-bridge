@@ -1,0 +1,33 @@
+[Unit]
+Description=mx-trader-bridge v3 全自动A股交易系统
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/projects/mx-trader-bridge
+
+# supervisor.sh 自带崩溃重启逻辑，systemd 只负责启停
+ExecStart=/home/ubuntu/projects/mx-trader-bridge/supervisor.sh
+
+# 标准输出/错误已被 supervisor 重定向到 logs/
+StandardOutput=null
+StandardError=null
+
+# 优雅停机：先发 TERM，30 秒后强杀
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# 异常退出（非 0）时由 systemd 兜底重启（supervisor 已重启 10 次后才会触发）
+Restart=on-failure
+RestartSec=30
+
+# 资源/安全限制
+LimitNOFILE=8192
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

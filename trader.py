@@ -6,8 +6,9 @@ load_dotenv()
 from config_store import load as _load_cfg
 _cfg = _load_cfg()
 
-MX_APIKEY  = os.getenv('MX_APIKEY')  or _cfg.get('mx_apikey', '')
-MX_API_URL = os.getenv('MX_API_URL') or _cfg.get('mx_api_url', 'https://mkapi2.dfcfs.com/finskillshub')
+# 账号一致性保障：config 优先（Web面板写入），env 仅兜底，避免 hermes 进程残留旧 env 串账号
+MX_APIKEY  = _cfg.get('mx_apikey', '') or os.getenv('MX_APIKEY', '')
+MX_API_URL = _cfg.get('mx_api_url', '') or os.getenv('MX_API_URL', 'https://mkapi2.dfcfs.com/finskillshub')
 
 class TradeError(Exception):
     """下单业务失败（rc != 0）"""

@@ -10,8 +10,9 @@ LLM_PROVIDER = os.getenv('LLM_PROVIDER') or _cfg.get('llm_provider', 'ark')
 LLM_API_KEY  = os.getenv('LLM_API_KEY')  or _cfg.get('llm_api_key', '')
 LLM_MODEL    = os.getenv('LLM_MODEL')    or _cfg.get('llm_model', 'ark-code-latest')
 LLM_BASE_URL = os.getenv('LLM_BASE_URL') or _cfg.get('llm_base_url', 'https://ark.cn-beijing.volces.com/api/v3')
-MX_APIKEY    = os.getenv('MX_APIKEY')    or _cfg.get('mx_apikey', '')
-MX_API_URL   = os.getenv('MX_API_URL')   or _cfg.get('mx_api_url', 'https://mkapi2.dfcfs.com/finskillshub')
+# 账号一致性保障：config 优先（Web面板写入），env 仅兜底，避免 hermes 进程残留旧 env 串账号
+MX_APIKEY    = _cfg.get('mx_apikey', '')    or os.getenv('MX_APIKEY', '')
+MX_API_URL   = _cfg.get('mx_api_url', '')   or os.getenv('MX_API_URL', 'https://mkapi2.dfcfs.com/finskillshub')
 
 def chat(messages, temperature=0.7) -> str:
     """调用 LLM"""

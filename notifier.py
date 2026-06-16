@@ -81,6 +81,153 @@ def _to_serverchan(title: str, text: str) -> bool:
         return False
 
 
+# ============================================================
+# PDF 推送：markdown → 美化 HTML → wkhtmltopdf → 企微 file 消息
+# ============================================================
+_PDF_CSS = """<style>
+body{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;max-width:780px;margin:40px auto;padding:0 20px;line-height:1.7;color:#222}
+h1{border-bottom:3px solid #2563eb;padding-bottom:8px;color:#1e40af}
+h2{border-left:4px solid #2563eb;padding-left:10px;margin-top:30px;color:#1e3a8a}
+h3{color:#1d4ed8}
+table{border-collapse:collapse;margin:12px 0;width:100%}
+th,td{border:1px solid #cbd5e1;padding:8px 12px}
+th{background:#eff6ff}
+code{background:#f1f5f9;padding:2px 6px;border-radius:4px;color:#be123c;font-family:Menlo,Consolas,monospace}
+pre{background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto;line-height:1.5}
+pre code{background:transparent;color:inherit;padding:0}
+blockquote{border-left:4px solid #94a3b8;background:#f8fafc;padding:8px 16px;color:#475569;margin:16px 0}
+hr{border:none;border-top:1px dashed #cbd5e1;margin:24px 0}
+ul,ol{padding-left:24px}
+li{margin:4px 0}
+.profit-pos{color:#dc2626;font-weight:bold}
+.profit-neg{color:#16a34a;font-weight:bold}
+</style>"""
+
+
+def _md_to_pdf(content: str, output_pdf: str, is_markdown: bool = True) -> bool:
+    """渲染 markdown/HTML 字符串为 PDF。返回是否成功。"""
+    import subprocess, tempfile
+    try:
+        if is_markdown:
+            try:
+                import markdown
+            except ImportError:
+                print("  notifier.pdf: 需要 pip install markdown")
+                return False
+            html_body = markdown.markdown(content, extensions=['tables', 'fenced_code', 'nl2br'])
+        else:
+            html_body = content
+        full_html = f"<!DOCTYPE html><html><head><meta charset='utf-8'>{_PDF_CSS}</head><body>{html_body}</body></html>"
+        with tempfile.NamedTemporaryFile('w', suffix='.html', delete=False, encoding='utf-8') as f:
+            f.write(full_html)
+            html_path = f.name
+        r = subprocess.run(
+            ['wkhtmltopdf', '--encoding', 'utf-8', '--enable-local-file-access',
+             '--quiet', html_path, output_pdf],
+            capture_output=True, text=True, timeout=30,
+        )
+        os.unlink(html_path)
+        if r.returncode != 0 or not os.path.exists(output_pdf):
+            print(f"  notifier.pdf: wkhtmltopdf 失败 {r.stderr[:200]}")
+            return False
+        return True
+    except FileNotFoundError:
+        print("  notifier.pdf: 系统未装 wkhtmltopdf（apt install wkhtmltopdf）")
+        return False
+    except Exception as e:
+        print(f"  notifier.pdf: 渲染异常 {e}")
+        return False
+
+
+def _wecom_upload_file(file_path: str) -> str:
+    """上传文件到企微群机器人，返回 media_id（3 天内有效）。"""
+    if not WECOM_BOT_WEBHOOK or not os.path.exists(file_path):
+        return ''
+    # 从 webhook URL 取 key
+    import re
+    m = re.search(r'key=([\w-]+)', WECOM_BOT_WEBHOOK)
+    if not m:
+        return ''
+    upload_url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key={m.group(1)}&type=file"
+    try:
+        with open(file_path, 'rb') as f:
+            r = requests.post(upload_url, files={'media': f}, timeout=30)
+        body = r.json()
+        if body.get('errcode') == 0:
+            return body.get('media_id', '')
+        print(f"  notifier.wecom_upload: {body}")
+    except Exception as e:
+        print(f"  notifier.wecom_upload: {e}")
+    return ''
+
+
+def _wecom_send_file(media_id: str) -> bool:
+    """发 file 消息到企微群。"""
+    if not WECOM_BOT_WEBHOOK or not media_id:
+        return False
+    try:
+        r = requests.post(
+            WECOM_BOT_WEBHOOK,
+            json={'msgtype': 'file', 'file': {'media_id': media_id}},
+            timeout=10,
+        )
+        return r.json().get('errcode') == 0
+    except Exception as e:
+        print(f"  notifier.wecom_send_file: {e}")
+        return False
+
+
+def notify_pdf(content: str, filename: str = None, is_markdown: bool = True,
+               keep_pdf: bool = False) -> dict:
+    """把 Markdown/HTML 内容渲染成 PDF 推送到企业微信群。
+
+    Args:
+        content: Markdown 字符串 或 HTML 字符串 或 .md 文件路径
+        filename: 输出 PDF 文件名（不含路径），不指定则用时间戳
+        is_markdown: True=按 markdown 渲染，False=按 HTML 渲染
+        keep_pdf: True=保留生成的 PDF 文件，False=发完就删
+
+    Returns:
+        {ok: bool, pdf_path: str, media_id: str}
+    """
+    import tempfile
+
+    # 内容是文件路径？直接读
+    if is_markdown and os.path.exists(content) and content.endswith('.md'):
+        with open(content, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+    # 决定输出路径
+    if not filename:
+        filename = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+    if not filename.endswith('.pdf'):
+        filename += '.pdf'
+    pdf_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs', 'pdf')
+    os.makedirs(pdf_dir, exist_ok=True)
+    pdf_path = os.path.join(pdf_dir, filename)
+
+    out = {'ok': False, 'pdf_path': pdf_path, 'media_id': ''}
+
+    # 渲染
+    if not _md_to_pdf(content, pdf_path, is_markdown):
+        return out
+
+    print(f"  📄 PDF 已生成 {pdf_path} ({os.path.getsize(pdf_path)//1024}KB)")
+
+    # 上传 + 发送
+    media_id = _wecom_upload_file(pdf_path)
+    if not media_id:
+        return out
+    out['media_id'] = media_id
+    out['ok'] = _wecom_send_file(media_id)
+
+    if not keep_pdf and out['ok']:
+        try: os.unlink(pdf_path)
+        except: pass
+
+    return out
+
+
 def notify(text: str, level: str = 'info', title: str = None) -> dict:
     """发送一条消息到所有已配置通道。
 

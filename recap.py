@@ -84,7 +84,7 @@ def run_recap():
     except Exception as e:
         print(f"⚠️  发帖失败：{e}")
     
-    # 微信推送
+    # 微信推送（旧通道，保留兼容）
     webhook = os.getenv('WECHAT_WEBHOOK', '')
     if webhook:
         import requests
@@ -94,6 +94,51 @@ def run_recap():
             print("📱 微信推送成功")
         except Exception as e:
             print(f"微信推送失败：{e}")
+
+    # 📄 PDF 日报推送到企微群（v3 新增）
+    try:
+        import notifier
+        # 把 HTML 报告 + 摘要拼成 markdown
+        md_report = f"""# 📊 {today} 收盘复盘
+
+## 资金概览
+
+| 指标 | 数值 |
+|---|---|
+| 💰 总资产 | {total:,.0f} |
+| 📦 持仓市值 | {pos_value:,.0f} |
+| 💵 可用资金 | {avail:,.0f} |
+| 📈 当日盈亏 | **{day_profit:+,.0f}（{day_pct:+.2f}%）** |
+
+## 交易明细
+
+> {notes}{ghost_warn}
+
+"""
+        if real_orders:
+            md_report += "### 今日成交\n\n| 方向 | 代码 | 名称 | 均价 | 数量 |\n|---|---|---|---|---|\n"
+            for o in real_orders:
+                emoji = '🟢 买' if o.get('drt') == 1 else '🔴 卖'
+                ap = avg_price(o)
+                md_report += f"| {emoji} | {o.get('secCode','')} | {o.get('secName','')} | {ap:.2f} | {o.get('tradeCount',0)} |\n"
+        if pos:
+            md_report += "\n### 当前持仓\n\n| 代码 | 名称 | 成本 | 现价 | 浮盈% |\n|---|---|---|---|---|\n"
+            for p in pos:
+                if p.get('count', 0) <= 0: continue
+                cost = p.get('_costPrice') or (p['costPrice'] / (10 ** p.get('costPriceDec', 2)))
+                price = p.get('_price') or (p['price'] / (10 ** p.get('priceDec', 2)))
+                pct = ((price - cost) / cost * 100) if cost else 0
+                md_report += f"| {p['secCode']} | {p['secName']} | {cost:.2f} | {price:.2f} | **{pct:+.2f}%** |\n"
+        md_report += f"\n---\n> 📝 报告生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+
+        r = notifier.notify_pdf(md_report, filename=f"daily_{today}.pdf")
+        if r['ok']:
+            print(f"📄 PDF 日报已推送到企微 (media_id={r['media_id'][:20]}...)")
+        else:
+            print(f"📄 PDF 推送失败，回退文本通道")
+            notifier.notify(f"📊 {today} 日报\n资产 {total:,.0f}｜盈亏 {day_profit:+,.0f}（{day_pct:+.2f}%）\n{notes}", level='success')
+    except Exception as e:
+        print(f"  PDF 推送异常：{e}")
 
     return {'total': total, 'profit': day_profit, 'pct': day_pct, 'notes': notes}
 

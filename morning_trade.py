@@ -72,7 +72,7 @@ def verify_filled(stock_code: str, expected_qty: int, max_wait: float = None) ->
                     fp = (o.get('tradePrice') or 0) / (10 ** pdec) if pdec else 0
                     return {
                         'filled': True,
-                        'order_id': o.get('orderId', ''),
+                        'order_id': o.get('id') or o.get('orderId', ''),
                         'fill_price': fp,
                         'fill_qty': o.get('tradeCount', 0),
                     }
@@ -82,7 +82,7 @@ def verify_filled(stock_code: str, expected_qty: int, max_wait: float = None) ->
     # 超时未成交
     return {
         'filled': False,
-        'order_id': (last_order or {}).get('orderId', ''),
+        'order_id': (last_order or {}).get('id') or (last_order or {}).get('orderId', ''),
         'fill_price': 0,
         'fill_qty': 0,
         'last_status': (last_order or {}).get('status'),
@@ -188,8 +188,7 @@ def run_morning_trade():
         # 提交订单（trader._trade 内部已 rc=0 校验，rc!=0 抛 TradeError）
         try:
             res = trader.buy(code, qty, price=limit_price)
-            order_id = (res.get('data', {}).get('result') or {}).get('orderId', '') \
-                       or res.get('data', {}).get('orderId', '')
+            order_id = trader._extract_order_id(res)
             print(f"   ✅ 已提交 orderId={order_id}")
         except trader.TradeError as e:
             print(f"   ❌ 下单被拒: {e}")

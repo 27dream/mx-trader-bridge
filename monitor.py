@@ -54,8 +54,7 @@ def check_and_exit():
             try:
                 # ✅ 用 sell_safe：内含 rc=0 校验 + 成交轮询
                 r = trader.sell_safe(code, qty, price=None)
-                order_id = (r.get('order_resp', {}).get('data', {}).get('result') or {}).get('orderId', '') \
-                           or r.get('order_resp', {}).get('data', {}).get('orderId', '')
+                order_id = trader._extract_order_id(r.get('order_resp') or {})
                 fill = r.get('fill_info', {})
                 fill_price = fill.get('avgPrice', price) or price
                 status = 'filled' if r.get('ok') else 'submit_only'

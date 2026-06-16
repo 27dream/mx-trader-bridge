@@ -20,13 +20,32 @@ def _post(path: str, body: dict) -> dict:
     return r.json()
 
 def _trade(body: dict) -> dict:
-    """下单 + rc=0 校验。rc!=0 抛 TradeError，含完整 response"""
+    """下单 + rc=0 校验。rc!=0 抛 TradeError，含完整 response
+
+    妙想真实响应结构：
+      { "code": "200", "data": { "rc": 0, "rmsg": "", "orderID": "261...", "result": {...} } }
+    rc 字段在 data.rc（不是 data.result.rc），data.result 只装 status/interval。
+    顶层 code != "200" 时（如余额不足）data 可能为 null，统一按失败处理。
+    """
     res = _post('/api/claw/mockTrading/trade', body)
-    rc = (res.get('data') or {}).get('result', {}).get('rc')
+    top_code = str(res.get('code', ''))
+    data = res.get('data') or {}
+    # 顶层非 200（如 501 余额不足）→ 直接失败
+    if top_code and top_code != '200':
+        raise TradeError(f"下单失败 code={top_code} msg={res.get('message')} body={body} resp={res}")
+    # rc 优先取 data.rc，兼容旧字段 data.result.rc
+    rc = data.get('rc')
+    if rc is None:
+        rc = (data.get('result') or {}).get('rc')
     if rc != 0:
-        msg = (res.get('data') or {}).get('result', {}).get('rmsg') or res.get('msg') or 'unknown'
-        raise TradeError(f"下单失败 rc={rc} msg={msg} body={body} resp={res}")
+        rmsg = data.get('rmsg') or (data.get('result') or {}).get('rmsg') or res.get('message') or 'unknown'
+        raise TradeError(f"下单失败 rc={rc} msg={rmsg} body={body} resp={res}")
     return res
+
+def _extract_order_id(trade_resp: dict) -> str:
+    """从下单响应抽 orderID（妙想真实字段名是大写 D：data.orderID）"""
+    d = trade_resp.get('data') or {}
+    return d.get('orderID') or d.get('orderId') or (d.get('result') or {}).get('orderId') or ''
 
 def get_balance() -> dict:
     """查资金 → {totalAssets, availBalance, totalPosPct}"""
@@ -101,7 +120,7 @@ def verify_filled(stock_code: str, quantity: int, drt: int = 1, max_wait: int = 
                 price_dec = o.get('priceDec', 2)
                 avg_price = (o.get('tradePrice', 0) / (10 ** price_dec)) if trade_cnt else 0
                 last = {'status': status, 'tradeCount': trade_cnt,
-                        'avgPrice': avg_price, 'orderId': o.get('orderId')}
+                        'avgPrice': avg_price, 'orderId': o.get('id') or o.get('orderId')}
                 if status == 4 and trade_cnt >= quantity:  # 全部成交
                     last['filled'] = True
                     return last

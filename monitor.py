@@ -99,10 +99,7 @@ def _decide_exit(p: dict, state: dict, force_exit: bool) -> str | None:
     # 1) 硬止损
     if pnl_pct <= _hard_stop():
         return f'hard_stop ({pnl_pct*100:+.2f}%)'
-    # 2) 止盈
-    if pnl_pct >= _take_profit():
-        return f'take_profit ({pnl_pct*100:+.2f}%)'
-    # 3) 移动止损
+    # 2) 移动止损（取代固定止盈，抓主升浪，从峰值回落2%卖出）
     if high >= _trail_trigger() and (high - pnl_pct) >= _trail_drawdown():
         return f'trail_stop (peak={high*100:+.2f}% now={pnl_pct*100:+.2f}%)'
     # 4) 时间止损

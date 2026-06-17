@@ -144,10 +144,11 @@ TRADING = {
     'min_cash_per_trade': 1000,      # 单笔最低金额
 }
 
+# sell 参数（策略级 sl/tp 仅在 picker 输出候选时参考；实际卖出用全局 SELL）
 SELL = {
-    'hard_stop_pct':      -0.03,
-    'take_profit_pct':     0.06,
-    'trail_peak_trigger':  0.05,
+    'hard_stop_pct': -0.03,          # 硬止损 -3%
+    'take_profit_pct': 0.50,         # 已废弃（固定止盈已移除），由移动止损替代
+    'trail_peak_trigger': 0.05,      # 移动止损：涨超 5% 后激活
     'trail_drawdown':      0.02,
     'force_sell_time':    '14:50',
     'max_hold_days':       3,

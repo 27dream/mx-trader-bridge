@@ -5,6 +5,8 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+.sched_state.json
+candidates.json
 .venv/
 venv/
 .DS_Store
